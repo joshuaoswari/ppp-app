@@ -38,6 +38,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS devices (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             device_name TEXT UNIQUE NOT NULL,
+            mac_address TEXT,
             first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             last_seen TIMESTAMP,
             total_heartbeats INTEGER DEFAULT 0,
@@ -59,6 +60,7 @@ def init_db():
     c.execute('CREATE INDEX IF NOT EXISTS idx_device_name ON heartbeats(device_name)')
     c.execute('CREATE INDEX IF NOT EXISTS idx_timestamp ON heartbeats(timestamp)')
     c.execute('CREATE INDEX IF NOT EXISTS idx_display_order ON devices(display_order)')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_mac_address ON devices(mac_address)')
     
     conn.commit()
     conn.close()
@@ -76,7 +78,7 @@ def get_db():
 def heartbeat():
     """
     Receive heartbeat from client devices
-    Expected JSON: {"device_name": "Branch01", "timestamp": "2025-11-10 10:30:00"}
+    Expected JSON: {"device_name": "Branch01", "timestamp": "2025-11-10 10:30:00", "mac_address": "00:11:22:33:44:55"}
     """
     try:
         data = request.get_json()
@@ -85,19 +87,52 @@ def heartbeat():
             return jsonify({"error": "device_name is required"}), 400
         
         device_name = data['device_name']
+        mac_address = data.get('mac_address')
         client_timestamp = data.get('timestamp', datetime.now().isoformat())
         
         conn = get_db()
         c = conn.cursor()
         
-        # Insert or update device
-        c.execute('''
-            INSERT INTO devices (device_name, last_seen, total_heartbeats)
-            VALUES (?, ?, 1)
-            ON CONFLICT(device_name) DO UPDATE SET
-                last_seen = ?,
-                total_heartbeats = total_heartbeats + 1
-        ''', (device_name, datetime.now(), datetime.now()))
+        # Check if a device with this MAC address already exists with a different name
+        if mac_address:
+            c.execute('SELECT device_name FROM devices WHERE mac_address = ? AND device_name != ?', 
+                     (mac_address, device_name))
+            existing_device = c.fetchone()
+            
+            if existing_device:
+                old_name = existing_device['device_name']
+                
+                # Update all heartbeat records to use new name
+                c.execute('UPDATE heartbeats SET device_name = ? WHERE device_name = ?', 
+                         (device_name, old_name))
+                
+                # Update device record with new name
+                c.execute('''
+                    UPDATE devices 
+                    SET device_name = ?, last_seen = ?, total_heartbeats = total_heartbeats + 1
+                    WHERE mac_address = ?
+                ''', (device_name, datetime.now(), mac_address))
+                
+                print(f"✏️  Renamed device: {old_name} → {device_name} (MAC: {mac_address})")
+            else:
+                # Insert or update device
+                c.execute('''
+                    INSERT INTO devices (device_name, mac_address, last_seen, total_heartbeats)
+                    VALUES (?, ?, ?, 1)
+                    ON CONFLICT(device_name) DO UPDATE SET
+                        mac_address = ?,
+                        last_seen = ?,
+                        total_heartbeats = total_heartbeats + 1
+                ''', (device_name, mac_address, datetime.now(), mac_address, datetime.now()))
+        else:
+            # No MAC address provided, use old logic
+            c.execute('''
+                INSERT INTO devices (device_name, last_seen, total_heartbeats)
+                VALUES (?, ?, 1)
+                ON CONFLICT(device_name) DO UPDATE SET
+                    last_seen = ?,
+                    total_heartbeats = total_heartbeats + 1
+            ''', (device_name, datetime.now(), datetime.now()))
         
         # Log heartbeat for uptime calculation
         c.execute('''
