@@ -349,11 +349,11 @@ def update_tray_icon():
 def show_status():
     """Show status window"""
     status = "🟢 ONLINE" if is_online else "🔴 OFFLINE"
-    
+
     # Create a temporary root window
     root = tk.Tk()
     root.withdraw()  # Hide the root window
-    
+
     try:
         messagebox.showinfo(
             "Heartbeat Agent Status",
@@ -364,56 +364,77 @@ def show_status():
             parent=root
         )
     finally:
-        root.destroy()  # Clean up the root window
+        # Ensure proper cleanup
+        try:
+            root.quit()
+        except:
+            pass
+        try:
+            root.destroy()
+        except:
+            pass
 
 def change_device_name(icon, item):
     """Change device name"""
     global device_name_global
-    
+
     root = tk.Tk()
     root.withdraw()
-    
-    new_name = simpledialog.askstring(
-        "Change Device Name",
-        f"Current name: {device_name_global}\n\nEnter new device name:",
-        initialvalue=device_name_global,
-        parent=root
-    )
-    
-    if new_name and new_name.strip():
-        new_name = new_name.strip()
-        device_name_global = new_name
-        
-        # Save to config
-        _, server_url = load_config()
-        save_config(new_name, server_url)
-        
-        # Update tray icon tooltip
-        update_tray_icon()
-        
-        messagebox.showinfo(
-            "Success",
-            f"Device name changed to: {new_name}\n\nThis will take effect on the next heartbeat.",
+
+    try:
+        new_name = simpledialog.askstring(
+            "Change Device Name",
+            f"Current name: {device_name_global}\n\nEnter new device name:",
+            initialvalue=device_name_global,
             parent=root
         )
-    
-    try:
-        root.destroy()
-    except:
-        pass
+
+        if new_name and new_name.strip():
+            new_name = new_name.strip()
+            device_name_global = new_name
+
+            # Save to config
+            _, server_url = load_config()
+            save_config(new_name, server_url)
+
+            # Update tray icon tooltip
+            update_tray_icon()
+
+            messagebox.showinfo(
+                "Success",
+                f"Device name changed to: {new_name}\n\nThis will take effect on the next heartbeat.",
+                parent=root
+            )
+    finally:
+        # Ensure proper cleanup
+        try:
+            root.quit()
+        except:
+            pass
+        try:
+            root.destroy()
+        except:
+            pass
 
 def exit_app(icon, item):
     """Exit the application"""
     global tray_icon
     print("\n🛑 Stopping heartbeat agent...")
+
+    # Clean up lock file
     cleanup_lock_file()
-    
-    # Stop the tray icon
-    try:
-        icon.stop()
-    except:
-        pass
-    
+
+    # Stop the tray icon gracefully
+    if icon:
+        try:
+            icon.visible = False
+            icon.stop()
+        except:
+            pass
+
+    # Give it a moment to cleanup
+    time.sleep(0.5)
+
     # Force exit to ensure all threads are killed
     os._exit(0)
 
