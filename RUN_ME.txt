@@ -1,0 +1,97 @@
+========================================
+HOW TO RUN HEARTBEAT AGENT
+========================================
+
+After building with build.ps1, run the agent:
+
+HOW TO START
+------------
+Double-click: dist\HeartbeatAgent.exe
+
+FIRST RUN:
+- Configuration window will appear
+- Enter device name and server URL
+- Click "Start Agent"
+- Settings are saved automatically
+
+SUBSEQUENT RUNS:
+- Saved configuration is loaded automatically
+- No need to enter name/URL again
+- Agent starts immediately
+
+The console window shows:
+- Live status display
+- Real-time heartbeat counter
+- Device name and connection status
+- System tray icon
+
+
+CONSOLE FEATURES
+----------------
+The console window shows:
+- WARNING: DO NOT CLOSE THIS WINDOW
+- Live status updates every heartbeat
+- Current time, status, and heartbeat count
+
+Available Commands (type in console):
+- status  : Show detailed status report
+- help    : Show available commands
+- close   : Exit the agent safely
+
+SAFETY FEATURES:
+- Clicking the X button shows confirmation dialog
+- Prevents accidental closure
+- Type 'close' + 'YES' for safest exit
+- Or use system tray Exit option
+
+
+DISTRIBUTION TO OTHER PCS
+--------------------------
+Copy the file to each PC:
+- dist\HeartbeatAgent.exe
+
+Tell users to:
+1. Double-click HeartbeatAgent.exe
+2. Enter device name and server URL (FIRST RUN ONLY)
+3. Keep the console window open
+4. Type 'close' and confirm 'YES' to exit
+
+AUTO-STARTUP ON BOOT:
+- Add HeartbeatAgent.exe to Windows Startup folder
+- Press Win+R, type: shell:startup
+- Create shortcut to HeartbeatAgent.exe
+- Agent will start automatically on login
+- Configuration is saved in: %LOCALAPPDATA%\HeartbeatAgent
+
+
+SYSTEM TRAY ICON
+-----------------
+The agent also runs in the system tray:
+- Right-click the tray icon for menu
+- View Status: Show status notification
+- Change Name: Rename the device
+- Exit: Close the agent
+
+Check hidden icons (^ arrow) if you don't
+see the heartbeat icon.
+
+
+TROUBLESHOOTING
+---------------
+Q: How do I close the agent?
+A: Three ways:
+   1. Click X button → Confirm in dialog
+   2. Type 'close' in console → Type 'YES'
+   3. Right-click tray icon → Exit
+
+Q: What happens if I click the X button?
+A: A confirmation dialog appears asking if you're sure.
+   Click "Yes" to exit or "No" to continue running.
+
+Q: I don't see the tray icon
+A: Check hidden icons (click ^ arrow in system tray)
+
+Q: App won't start
+A: Check Task Manager for existing HeartbeatAgent.exe process
+
+========================================

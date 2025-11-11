@@ -19,6 +19,7 @@ import socket
 import sys
 import os
 import threading
+import subprocess
 import tkinter as tk
 from tkinter import messagebox, simpledialog
 from PIL import Image, ImageDraw, ImageFont
@@ -27,6 +28,8 @@ from pystray import MenuItem as item
 import tempfile
 import atexit
 import uuid
+import ctypes
+from ctypes import wintypes
 
 # ==================== SINGLE INSTANCE LOCK ====================
 
@@ -84,14 +87,35 @@ MAX_RETRIES = 3
 INITIAL_RETRY_DELAY = 5
 MAX_RETRY_DELAY = 300
 
-# Configuration file path
-CONFIG_FILE = "heartbeat_config.json"
+# Configuration file path - use AppData for write permissions
+def get_config_path():
+    """Get the configuration file path in a user-writable location"""
+    if sys.platform == 'win32':
+        # Use AppData/Local for Windows
+        appdata = os.getenv('LOCALAPPDATA') or os.path.expanduser('~\\AppData\\Local')
+        config_dir = os.path.join(appdata, 'HeartbeatAgent')
+    else:
+        # Use home directory for other platforms
+        config_dir = os.path.expanduser('~/.heartbeat')
+
+    # Create directory if it doesn't exist
+    try:
+        os.makedirs(config_dir, exist_ok=True)
+    except:
+        # Fallback to temp directory if AppData is not writable
+        config_dir = tempfile.gettempdir()
+
+    return os.path.join(config_dir, 'heartbeat_config.json')
+
+CONFIG_FILE = get_config_path()
 
 # Global variables for system tray
 heartbeat_count = 0
 is_online = False
 tray_icon = None
 device_name_global = ""
+shutdown_event = threading.Event()  # Event to signal shutdown
+_console_handler_ref = None  # Keep reference to console handler to prevent garbage collection
 
 # ==================== CONFIGURATION FUNCTIONS ====================
 
@@ -116,10 +140,11 @@ def save_config(device_name, server_url):
         }
         with open(CONFIG_FILE, 'w') as f:
             json.dump(config, f, indent=2)
-        print(f"✅ Configuration saved to {CONFIG_FILE}")
+        print(f"✅ Configuration saved")
         return True
     except Exception as e:
-        print(f"⚠️  Could not save config file: {e}")
+        print(f"❌ ERROR: Could not save config file: {e}")
+        print(f"   Attempted path: {CONFIG_FILE}")
         return False
 
 def get_default_device_name():
@@ -284,22 +309,34 @@ class DeviceNameDialog:
         return self.device_name, self.server_url
 
 def get_device_name_gui():
-    """Get device name via GUI popup"""
+    """Get device name via GUI popup (only on first run)"""
+    # Try to load saved configuration
     saved_name, saved_server = load_config()
-    
+
+    # If configuration exists, use it directly without showing dialog
+    if saved_name and saved_server:
+        print(f"✅ Using saved configuration")
+        print(f"   Device Name: {saved_name}")
+        print(f"   Server URL: {saved_server}")
+        print()
+        return saved_name, saved_server
+
+    # First run - show configuration dialog
+    print("⚠️  No saved configuration found - showing setup dialog")
+
     if DEVICE_NAME and DEVICE_NAME != "Branch01":
         return DEVICE_NAME, SERVER_URL
-    
+
     try:
         dialog = DeviceNameDialog()
         device_name, server_url = dialog.show_dialog(saved_name, saved_server)
-        
+
         if device_name and server_url:
             save_config(device_name, server_url)
             return device_name, server_url
         else:
             return None, None
-            
+
     except Exception as e:
         print(f"⚠️  GUI not available: {e}")
         return None, None
@@ -350,47 +387,42 @@ def show_status():
     """Show status window"""
     status = "🟢 ONLINE" if is_online else "🔴 OFFLINE"
 
-    # Create a temporary root window
-    root = tk.Tk()
-    root.withdraw()  # Hide the root window
+    # Use a simple notification instead of tkinter dialog
+    message = (
+        f"Device: {device_name_global}\n"
+        f"Status: {status}\n"
+        f"Total Heartbeats: {heartbeat_count}\n"
+        f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    )
 
-    try:
-        messagebox.showinfo(
-            "Heartbeat Agent Status",
-            f"Device: {device_name_global}\n"
-            f"Status: {status}\n"
-            f"Total Heartbeats: {heartbeat_count}\n"
-            f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-            parent=root
-        )
-    finally:
-        # Ensure proper cleanup
-        try:
-            root.quit()
-        except:
-            pass
-        try:
-            root.destroy()
-        except:
-            pass
+    # Show notification using pystray's notification system
+    if tray_icon:
+        tray_icon.notify(message, "Heartbeat Agent Status")
 
 def change_device_name(icon, item):
-    """Change device name"""
+    """Change device name using PowerShell input dialog"""
     global device_name_global
 
-    root = tk.Tk()
-    root.withdraw()
-
     try:
-        new_name = simpledialog.askstring(
-            "Change Device Name",
-            f"Current name: {device_name_global}\n\nEnter new device name:",
-            initialvalue=device_name_global,
-            parent=root
+        old_name = device_name_global
+
+        # Use PowerShell for Windows native input dialog
+        ps_script = f'''
+Add-Type -AssemblyName Microsoft.VisualBasic
+$newName = [Microsoft.VisualBasic.Interaction]::InputBox("Enter new device name:", "Change Device Name", "{device_name_global}")
+Write-Output $newName
+'''
+
+        result = subprocess.run(
+            ["powershell", "-Command", ps_script],
+            capture_output=True,
+            text=True,
+            timeout=30
         )
 
-        if new_name and new_name.strip():
-            new_name = new_name.strip()
+        new_name = result.stdout.strip()
+
+        if new_name and new_name != device_name_global:
             device_name_global = new_name
 
             # Save to config
@@ -400,26 +432,35 @@ def change_device_name(icon, item):
             # Update tray icon tooltip
             update_tray_icon()
 
-            messagebox.showinfo(
-                "Success",
-                f"Device name changed to: {new_name}\n\nThis will take effect on the next heartbeat.",
-                parent=root
-            )
-    finally:
-        # Ensure proper cleanup
-        try:
-            root.quit()
-        except:
-            pass
-        try:
-            root.destroy()
-        except:
-            pass
+            # Print to console
+            print("\n")
+            print("=" * 80)
+            print("✅ DEVICE NAME CHANGED")
+            print("=" * 80)
+            print(f"Old Name: {old_name}")
+            print(f"New Name: {new_name}")
+            print()
+            print("This change will take effect on the next heartbeat.")
+            print("=" * 80)
+            print()
+            print("📊 Live Status:")
+            print("-" * 80)
+
+            # Show notification
+            if tray_icon:
+                tray_icon.notify(
+                    f"Device name changed to: {new_name}\n\nThis will take effect on the next heartbeat.",
+                    "Success"
+                )
+    except Exception:
+        pass  # Silent failure
 
 def exit_app(icon, item):
     """Exit the application"""
-    global tray_icon
-    print("\n🛑 Stopping heartbeat agent...")
+    global tray_icon, shutdown_event
+
+    # Signal shutdown to the heartbeat loop
+    shutdown_event.set()
 
     # Clean up lock file
     cleanup_lock_file()
@@ -433,7 +474,7 @@ def exit_app(icon, item):
             pass
 
     # Give it a moment to cleanup
-    time.sleep(0.5)
+    time.sleep(1)
 
     # Force exit to ensure all threads are killed
     os._exit(0)
@@ -492,34 +533,29 @@ def send_heartbeat(server_url, device_name):
             heartbeat_count += 1
             is_online = True
             update_tray_icon()
-            print(f"✅ Heartbeat #{heartbeat_count} sent | Device: {current_device_name} | {datetime.now().strftime('%H:%M:%S')}")
             return True, None
         else:
             is_online = False
             update_tray_icon()
             error_msg = f"Server returned status {response.status_code}"
-            print(f"⚠️  {error_msg}")
             return False, error_msg
-            
+
     except requests.exceptions.ConnectionError:
         is_online = False
         update_tray_icon()
         error_msg = "Connection failed - server unreachable"
-        print(f"❌ {error_msg}")
         return False, error_msg
         
     except requests.exceptions.Timeout:
         is_online = False
         update_tray_icon()
         error_msg = "Request timeout"
-        print(f"❌ {error_msg}")
         return False, error_msg
-        
+
     except Exception as e:
         is_online = False
         update_tray_icon()
         error_msg = f"Unexpected error: {str(e)}"
-        print(f"❌ {error_msg}")
         return False, error_msg
 
 def send_heartbeat_with_retry(server_url, device_name, max_retries=MAX_RETRIES):
@@ -533,86 +569,710 @@ def send_heartbeat_with_retry(server_url, device_name, max_retries=MAX_RETRIES):
             return True
         
         if attempt < max_retries:
-            print(f"🔄 Retry {attempt}/{max_retries} in {retry_delay} seconds...")
+            # Retry with exponential backoff
             time.sleep(retry_delay)
             retry_delay = min(retry_delay * 2, MAX_RETRY_DELAY)
-    
-    print(f"❌ Failed to send heartbeat after {max_retries} attempts")
+
+    # Failed after all retries
     return False
 
 def run_heartbeat_agent(server_url, device_name):
     """Main loop that sends heartbeats at regular intervals"""
-    
-    print("=" * 60)
-    print("🚀 PC Heartbeat Client Agent Started")
-    print("=" * 60)
-    print(f"📱 Device Name: {device_name}")
-    print(f"🌐 Server URL: {server_url}")
-    print(f"⏰ Heartbeat Interval: {HEARTBEAT_INTERVAL} seconds")
-    print(f"🔄 Max Retries: {MAX_RETRIES}")
-    print(f"📊 System Tray: Enabled (check taskbar)")
-    print("=" * 60)
-    print("Press Ctrl+C to stop\n")
-    
+    global shutdown_event
+
     # Setup system tray icon
     setup_tray_icon(device_name)
     time.sleep(1)  # Give tray icon time to initialize
-    
+
     consecutive_failures = 0
-    
-    while True:
+
+    while not shutdown_event.is_set():
         try:
+            # Print live status to console
+            print_status_line()
+
             success = send_heartbeat_with_retry(server_url, device_name)
-            
+
             if success:
                 consecutive_failures = 0
             else:
                 consecutive_failures += 1
-                print(f"⚠️  Consecutive failures: {consecutive_failures}")
-                
+
                 if consecutive_failures >= 5:
-                    print(f"⚠️  Too many failures. Waiting {MAX_RETRY_DELAY} seconds...")
-                    time.sleep(MAX_RETRY_DELAY)
+                    # Too many failures, wait longer
+                    shutdown_event.wait(MAX_RETRY_DELAY)
                     continue
-            
-            time.sleep(HEARTBEAT_INTERVAL)
-            
+
+            # Print updated status after heartbeat
+            print_status_line()
+
+            # Use wait() instead of sleep() so shutdown can interrupt it
+            shutdown_event.wait(HEARTBEAT_INTERVAL)
+
         except KeyboardInterrupt:
-            print("\n\n🛑 Heartbeat agent stopped by user")
+            # User stopped the agent
             if tray_icon:
                 try:
                     tray_icon.stop()
                 except:
                     pass
             cleanup_lock_file()
-            print("=" * 60)
             os._exit(0)
-            
-        except Exception as e:
-            print(f"❌ Unexpected error in main loop: {str(e)}")
-            time.sleep(HEARTBEAT_INTERVAL)
+
+        except Exception:
+            # Error occurred, wait and retry
+            shutdown_event.wait(HEARTBEAT_INTERVAL)
+
+    # Heartbeat loop terminated
+
+# ==================== CONSOLE UI ====================
+
+def print_banner():
+    """Print console banner with warning"""
+    os.system('cls' if os.name == 'nt' else 'clear')
+    print("=" * 80)
+    print("██╗  ██╗███████╗ █████╗ ██████╗ ████████╗██████╗ ███████╗ █████╗ ████████╗")
+    print("██║  ██║██╔════╝██╔══██╗██╔══██╗╚══██╔══╝██╔══██╗██╔════╝██╔══██╗╚══██╔══╝")
+    print("███████║█████╗  ███████║██████╔╝   ██║   ██████╔╝█████╗  ███████║   ██║   ")
+    print("██╔══██║██╔══╝  ██╔══██║██╔══██╗   ██║   ██╔══██╗██╔══╝  ██╔══██║   ██║   ")
+    print("██║  ██║███████╗██║  ██║██║  ██║   ██║   ██████╔╝███████╗██║  ██║   ██║   ")
+    print("╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝   ╚═════╝ ╚══════╝╚═╝  ╚═╝   ╚═╝   ")
+    print("=" * 80)
+    print()
+    print("⚠️  WARNING: DO NOT CLOSE THIS WINDOW! ⚠️")
+    print("⚠️  Closing this window will stop the Heartbeat Agent! ⚠️")
+    print()
+    print("=" * 80)
+    print()
+
+def print_status_line():
+    """Print current status on console"""
+    status_symbol = "🟢" if is_online else "🔴"
+    status_text = "ONLINE " if is_online else "OFFLINE"
+
+    # Clear the line and print status
+    print(f"\r[{datetime.now().strftime('%H:%M:%S')}] {status_symbol} {status_text} | Device: {device_name_global} | Heartbeats: {heartbeat_count}          ", end='', flush=True)
+
+def console_monitor_thread():
+    """Thread to monitor console input for exit command"""
+    global shutdown_event
+
+    print("💡 To exit the agent, type 'close' and press Enter")
+    print()
+    print("📊 Live Status:")
+    print("-" * 80)
+
+    while not shutdown_event.is_set():
+        try:
+            # Use select-like behavior for input with timeout
+            if sys.stdin in select.select([sys.stdin], [], [], 1)[0]:
+                user_input = sys.stdin.readline().strip().lower()
+
+                if user_input == 'close':
+                    print("\n")
+                    print("=" * 80)
+                    confirm = input("⚠️  Type 'YES' to confirm shutdown: ").strip().upper()
+
+                    if confirm == 'YES':
+                        print()
+                        print("🛑 Shutting down Heartbeat Agent...")
+                        shutdown_event.set()
+
+                        # Stop tray icon
+                        if tray_icon:
+                            try:
+                                tray_icon.stop()
+                            except:
+                                pass
+
+                        cleanup_lock_file()
+                        print("✓ Shutdown complete!")
+                        time.sleep(1)
+                        os._exit(0)
+                    else:
+                        print()
+                        print("❌ Shutdown cancelled. Agent continues running.")
+                        print()
+                        print("📊 Live Status:")
+                        print("-" * 80)
+                elif user_input == 'status':
+                    print("\n")
+                    print("=" * 80)
+                    print(f"📊 STATUS REPORT")
+                    print("=" * 80)
+                    print(f"Device Name      : {device_name_global}")
+                    print(f"Status           : {'🟢 ONLINE' if is_online else '🔴 OFFLINE'}")
+                    print(f"Total Heartbeats : {heartbeat_count:,}")
+                    print(f"Current Time     : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+                    print("=" * 80)
+                    print()
+                    print("📊 Live Status:")
+                    print("-" * 80)
+                elif user_input == 'help':
+                    print("\n")
+                    print("=" * 80)
+                    print("📖 AVAILABLE COMMANDS")
+                    print("=" * 80)
+                    print("status  - Show detailed status report")
+                    print("help    - Show this help message")
+                    print("close   - Exit the Heartbeat Agent (requires confirmation)")
+                    print("=" * 80)
+                    print()
+                    print("📊 Live Status:")
+                    print("-" * 80)
+                elif user_input:
+                    print(f"\n❓ Unknown command: '{user_input}'. Type 'help' for available commands.\n")
+        except:
+            time.sleep(0.5)
+
+# ==================== CONSOLE CLOSE HANDLER ====================
+
+# Global variable to store the original window procedure
+_original_wndproc = None
+_close_handler_callback = None  # Keep reference to prevent garbage collection
+
+def setup_console_close_handler():
+    """Setup handler for console window close button (X button)
+
+    Shows a Windows MessageBox confirmation dialog when X button is clicked.
+    Uses SetConsoleCtrlHandler which works reliably with PyInstaller.
+    """
+    if sys.platform != 'win32':
+        return False
+
+    try:
+        kernel32 = ctypes.windll.kernel32
+        user32 = ctypes.windll.user32
+
+        # Windows API constants
+        CTRL_CLOSE_EVENT = 2
+        MB_YESNO = 0x00000004
+        MB_ICONWARNING = 0x00000030
+        MB_SYSTEMMODAL = 0x00001000
+        IDYES = 6
+
+        def console_close_handler(event_type):
+            """Handler called when user clicks X button"""
+            global shutdown_event, tray_icon
+
+            # Only handle close button (X button)
+            if event_type == CTRL_CLOSE_EVENT:
+                # Get console window handle for MessageBox parent
+                hwnd = kernel32.GetConsoleWindow()
+
+                # Show Windows MessageBox (native, no tkinter needed)
+                result = user32.MessageBoxW(
+                    hwnd,
+                    "⚠️  Closing this window will STOP the Heartbeat Agent!\n\n"
+                    "Are you sure you want to exit?\n\n"
+                    "💡 Tip: Use the system tray icon to exit instead,\n"
+                    "or type 'close' in the console for a safer exit.",
+                    "Confirm Exit - Heartbeat Agent",
+                    MB_YESNO | MB_ICONWARNING | MB_SYSTEMMODAL
+                )
+
+                if result == IDYES:
+                    # User clicked YES - exit normally
+                    print("\n")
+                    print("=" * 80)
+                    print("🛑 Shutting down Heartbeat Agent...")
+                    print("=" * 80)
+
+                    shutdown_event.set()
+
+                    # Stop tray icon
+                    if tray_icon:
+                        try:
+                            tray_icon.stop()
+                        except:
+                            pass
+
+                    cleanup_lock_file()
+                    print("✓ Shutdown complete!")
+                    time.sleep(1)
+                    os._exit(0)
+                else:
+                    # User clicked NO - RELAUNCH THE EXE BEFORE CLOSING!
+                    # This is a workaround because SetConsoleCtrlHandler doesn't prevent
+                    # the close in PyInstaller executables
+                    print("\n")
+                    print("=" * 80)
+                    print("✅ EXIT CANCELLED - RESTARTING...")
+                    print("=" * 80)
+
+                    try:
+                        # Check if we're running as frozen executable
+                        is_frozen = getattr(sys, 'frozen', False)
+
+                        if is_frozen:
+                            # Get absolute path to the executable
+                            import os
+                            exe_path = os.path.abspath(sys.executable)
+                            print(f"Relaunching: {exe_path}")
+
+                            # CRITICAL: Remove the lock file so new instance can start
+                            try:
+                                cleanup_lock_file()
+                                print("✓ Lock file removed")
+                            except Exception as e:
+                                print(f"⚠️  Error removing lock file: {e}")
+
+                            # Use Windows API CreateProcess for more reliable detached launch
+                            import subprocess
+
+                            # Use shell=True with 'start' command - most reliable way on Windows
+                            # The 'start' command creates a truly independent process
+                            try:
+                                subprocess.Popen(
+                                    f'start "" "{exe_path}"',
+                                    shell=True,
+                                    cwd=os.path.dirname(exe_path)
+                                )
+                                print(f"✓ New instance launched via 'start' command")
+                                time.sleep(1)  # Brief delay to let it start
+                            except Exception as sub_e:
+                                print(f"⚠️  Launch failed: {sub_e}")
+                                import traceback
+                                traceback.print_exc()
+
+                            print("✓ New window should appear now. This window will close...")
+                        else:
+                            print("⚠️  Not running as frozen executable - cannot restart")
+                            time.sleep(2)
+                    except Exception as e:
+                        print(f"⚠️  Error restarting: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        print("Please manually restart the application.")
+                        time.sleep(3)
+
+                # Since we can't actually prevent the close in PyInstaller,
+                # we've relaunched a new instance if user clicked NO
+                # Return 1 anyway (though it won't prevent close in PyInstaller)
+                return 1
+
+            # For other events (Ctrl+C, etc), return 0 to allow default behavior
+            return 0
+
+        # Set the console control handler
+        HandlerRoutine = ctypes.WINFUNCTYPE(ctypes.c_int, ctypes.c_uint)
+        handler_func = HandlerRoutine(console_close_handler)
+
+        # Keep reference to prevent garbage collection
+        global _close_handler_callback
+        _close_handler_callback = handler_func
+
+        result = kernel32.SetConsoleCtrlHandler(handler_func, 1)
+
+        if result:
+            print("✓ Console close handler installed (X button will show confirmation dialog)")
+            return True
+        else:
+            print("⚠️  Could not install console close handler")
+            return False
+
+    except Exception as e:
+        print(f"⚠️  Could not set console close handler: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+def setup_console_close_handler_OLD_COMPLEX():
+    """OLD COMPLEX VERSION - This didn't work with PyInstaller
+
+    Kept for reference in case we want to try again later.
+    """
+    if sys.platform != 'win32':
+        return False
+
+    is_frozen = getattr(sys, 'frozen', False)
+
+    try:
+        # Windows API constants
+        CTRL_CLOSE_EVENT = 2
+        CTRL_C_EVENT = 0
+        CTRL_BREAK_EVENT = 1
+
+        # Track if we're showing a dialog to prevent multiple dialogs
+        _showing_dialog = threading.Lock()
+
+        def console_close_handler(event_type):
+            """Handler called when user tries to close console window"""
+            global shutdown_event, tray_icon
+
+            # Debug logging
+            print(f"\n[DEBUG] Close handler triggered! event_type={event_type}")
+            print(f"[DEBUG] CTRL_CLOSE_EVENT={CTRL_CLOSE_EVENT}")
+
+            try:
+                # Only handle close button (X button)
+                if event_type == CTRL_CLOSE_EVENT:
+                    print(f"[DEBUG] X button detected! Attempting to show dialog...")
+                    # Try to acquire the lock - if we can't, a dialog is already showing
+                    if not _showing_dialog.acquire(blocking=False):
+                        return 1  # Already showing dialog, prevent close
+
+                    try:
+                        # CRITICAL: We must return 1 (True) IMMEDIATELY to prevent Windows from closing
+                        # Then we handle the dialog in a separate thread
+
+                        def show_exit_dialog():
+                            """Show exit confirmation dialog in a separate thread"""
+                            global shutdown_event, tray_icon
+
+                            try:
+                                print(f"[DEBUG] Dialog thread started...")
+                                # Small delay to ensure handler has returned
+                                time.sleep(0.1)
+
+                                print(f"[DEBUG] Creating tkinter window...")
+                                # Show confirmation dialog
+                                root = tk.Tk()
+                                root.withdraw()
+                                root.attributes('-topmost', True)
+                                root.lift()
+                                root.focus_force()
+
+                                print(f"[DEBUG] Showing messagebox...")
+                                response = messagebox.askyesno(
+                                    "Confirm Exit",
+                                    "⚠️  Closing this window will STOP the Heartbeat Agent!\n\n"
+                                    "Are you sure you want to exit?\n\n"
+                                    "💡 Tip: Use the system tray icon to exit instead,\n"
+                                    "or type 'close' in the console for a safer exit.",
+                                    icon='warning'
+                                )
+
+                                print(f"[DEBUG] Dialog closed. User response: {response}")
+                                root.destroy()
+
+                                if response:
+                                    # User confirmed exit
+                                    print("\n")
+                                    print("=" * 80)
+                                    print("🛑 Shutting down Heartbeat Agent...")
+                                    print("=" * 80)
+
+                                    shutdown_event.set()
+
+                                    # Stop tray icon
+                                    if tray_icon:
+                                        try:
+                                            tray_icon.stop()
+                                        except:
+                                            pass
+
+                                    cleanup_lock_file()
+                                    print("✓ Shutdown complete!")
+                                    time.sleep(1)
+                                    os._exit(0)
+                                else:
+                                    # User cancelled - continue running
+                                    print("\n")
+                                    print("=" * 80)
+                                    print("✅ EXIT CANCELLED")
+                                    print("=" * 80)
+                                    print("The Heartbeat Agent will continue running.")
+                                    print()
+                                    print("📊 Live Status:")
+                                    print("-" * 80)
+                            except Exception as e:
+                                # If dialog fails, just print error and continue running
+                                print(f"\n⚠️  Error showing exit dialog: {e}")
+                                print("Agent will continue running. Use 'close' command to exit safely.")
+                                print()
+                            finally:
+                                # Always release the lock
+                                _showing_dialog.release()
+
+                        # Start dialog in a separate thread
+                        print(f"[DEBUG] Starting dialog thread...")
+                        dialog_thread = threading.Thread(target=show_exit_dialog, daemon=False)
+                        dialog_thread.start()
+                        print(f"[DEBUG] Dialog thread started, returning 1 to prevent close")
+
+                        # ALWAYS return 1 (True) to tell Windows we handled it and prevent the close
+                        return 1
+                    except:
+                        _showing_dialog.release()
+                        return 1
+
+                # For Ctrl+C and Ctrl+Break, let them through (return 0)
+                elif event_type == CTRL_C_EVENT or event_type == CTRL_BREAK_EVENT:
+                    return 0
+
+                # For other events, prevent close
+                return 1
+
+            except Exception as e:
+                # If anything fails, prevent the close by default
+                print(f"\n⚠️  Error in close handler: {e}")
+                return 1
+
+        # Try BOTH methods: SetConsoleCtrlHandler AND Window Procedure Hook
+        print(f"[DEBUG] Setting up console close handler...")
+        kernel32 = ctypes.windll.kernel32
+        user32 = ctypes.windll.user32
+
+        # METHOD 1: SetConsoleCtrlHandler
+        # Define the handler function type
+        HandlerRoutine = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.DWORD)
+        handler_func = HandlerRoutine(console_close_handler)
+        print(f"[DEBUG] Handler function created: {handler_func}")
+
+        # Set the console control handler
+        print(f"[DEBUG] Calling SetConsoleCtrlHandler...")
+        result = kernel32.SetConsoleCtrlHandler(handler_func, 1)
+        print(f"[DEBUG] SetConsoleCtrlHandler result: {result} (1=success, 0=failure)")
+
+        # METHOD 2: Window Procedure Hook (for PyInstaller compatibility)
+        hwnd = kernel32.GetConsoleWindow()
+        print(f"[DEBUG] Console window handle: {hwnd}")
+
+        if hwnd:
+            # Define window procedure callback
+            WM_CLOSE = 0x0010
+            WM_QUERYENDSESSION = 0x0011
+            GWLP_WNDPROC = -4
+
+            # Window procedure function type
+            WNDPROC = ctypes.WINFUNCTYPE(
+                ctypes.c_long,
+                wintypes.HWND,
+                wintypes.UINT,
+                wintypes.WPARAM,
+                wintypes.LPARAM
+            )
+
+            def window_proc(hwnd, msg, wparam, lparam):
+                """Custom window procedure to intercept close messages"""
+                global _original_wndproc
+
+                # Only log close-related messages to avoid spam
+                if msg == WM_CLOSE or msg == WM_QUERYENDSESSION:
+                    print(f"[DEBUG] Window message received: {msg} (WM_CLOSE={WM_CLOSE})")
+
+                if msg == WM_CLOSE:
+                    print(f"[DEBUG] WM_CLOSE detected! Showing confirmation dialog...")
+                    # Call the same close handler
+                    console_close_handler(CTRL_CLOSE_EVENT)
+                    # Don't pass to original - we handled it
+                    return 0
+
+                if msg == WM_QUERYENDSESSION:
+                    print(f"[DEBUG] WM_QUERYENDSESSION detected!")
+                    # Windows is shutting down - allow it
+                    return 1
+
+                # Pass all other messages to original window procedure
+                if _original_wndproc:
+                    return user32.CallWindowProcW(_original_wndproc, hwnd, msg, wparam, lparam)
+                return 0
+
+            # Create the callback
+            new_wndproc = WNDPROC(window_proc)
+            print(f"[DEBUG] New window procedure callback created: {new_wndproc}")
+
+            # Subclass the window
+            print(f"[DEBUG] Hooking window procedure...")
+            global _original_wndproc
+
+            # For 64-bit, we need to use LONG_PTR type instead of regular int
+            import platform
+            is_64bit = platform.architecture()[0] == '64bit'
+
+            if is_64bit:
+                # 64-bit: SetWindowLongPtrW with LONG_PTR (which is c_int64 on 64-bit)
+                # Define the correct function signature
+                LONG_PTR = ctypes.c_int64
+                user32.SetWindowLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int, LONG_PTR]
+                user32.SetWindowLongPtrW.restype = LONG_PTR
+
+                # Cast the callback to LONG_PTR
+                new_wndproc_ptr = ctypes.cast(new_wndproc, ctypes.c_void_p).value
+                print(f"[DEBUG] New window procedure pointer (64-bit): {hex(new_wndproc_ptr)}")
+
+                _original_wndproc = user32.SetWindowLongPtrW(hwnd, GWLP_WNDPROC, new_wndproc_ptr)
+            else:
+                # 32-bit: SetWindowLongW with regular LONG
+                user32.SetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int, wintypes.LONG]
+                user32.SetWindowLongW.restype = wintypes.LONG
+
+                new_wndproc_ptr = ctypes.cast(new_wndproc, ctypes.c_void_p).value
+                print(f"[DEBUG] New window procedure pointer (32-bit): {hex(new_wndproc_ptr)}")
+
+                _original_wndproc = user32.SetWindowLongW(hwnd, GWLP_WNDPROC, new_wndproc_ptr)
+
+            print(f"[DEBUG] Original window procedure: {hex(_original_wndproc) if _original_wndproc else '0x0'}")
+
+            # Check for error
+            if _original_wndproc == 0:
+                error_code = kernel32.GetLastError()
+                print(f"[DEBUG] ⚠️ SetWindowLong failed with error code: {error_code}")
+
+            if _original_wndproc:
+                # Keep reference to prevent garbage collection
+                global _console_handler_ref
+                _console_handler_ref = (handler_func, new_wndproc)
+                print(f"[DEBUG] ✓ Window procedure hook installed successfully!")
+                result = True
+            else:
+                print(f"[DEBUG] ✗ Failed to hook window procedure")
+
+        print(f"[DEBUG] Final setup result: {result}")
+
+        if result:
+            if not is_frozen:
+                # Running as Python script - warn user that close handler is limited
+                return "limited"
+
+            return True
+        else:
+            return False
+
+    except Exception as e:
+        print(f"⚠️  Could not set console close handler: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
 
 # ==================== MAIN ====================
 
 if __name__ == "__main__":
+    # Import select for input monitoring (Windows compatible)
+    try:
+        import select
+    except ImportError:
+        # Windows doesn't have select for stdin, use msvcrt instead
+        import msvcrt
+
+        # Override console_monitor_thread for Windows
+        def console_monitor_thread():
+            """Thread to monitor console input for exit command (Windows version)"""
+            global shutdown_event
+
+            print("💡 To exit the agent, type 'close' and press Enter")
+            print()
+            print("📊 Live Status:")
+            print("-" * 80)
+
+            while not shutdown_event.is_set():
+                try:
+                    # Check if input is available
+                    if msvcrt.kbhit():
+                        # Read the full line
+                        user_input = input().strip().lower()
+
+                        if user_input == 'close':
+                            print("\n")
+                            print("=" * 80)
+                            confirm = input("⚠️  Type 'YES' to confirm shutdown: ").strip().upper()
+
+                            if confirm == 'YES':
+                                print()
+                                print("🛑 Shutting down Heartbeat Agent...")
+                                shutdown_event.set()
+
+                                # Stop tray icon
+                                if tray_icon:
+                                    try:
+                                        tray_icon.stop()
+                                    except:
+                                        pass
+
+                                cleanup_lock_file()
+                                print("✓ Shutdown complete!")
+                                time.sleep(1)
+                                os._exit(0)
+                            else:
+                                print()
+                                print("❌ Shutdown cancelled. Agent continues running.")
+                                print()
+                                print("📊 Live Status:")
+                                print("-" * 80)
+                        elif user_input == 'status':
+                            print("\n")
+                            print("=" * 80)
+                            print(f"📊 STATUS REPORT")
+                            print("=" * 80)
+                            print(f"Device Name      : {device_name_global}")
+                            print(f"Status           : {'🟢 ONLINE' if is_online else '🔴 OFFLINE'}")
+                            print(f"Total Heartbeats : {heartbeat_count:,}")
+                            print(f"Current Time     : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+                            print("=" * 80)
+                            print()
+                            print("📊 Live Status:")
+                            print("-" * 80)
+                        elif user_input == 'help':
+                            print("\n")
+                            print("=" * 80)
+                            print("📖 AVAILABLE COMMANDS")
+                            print("=" * 80)
+                            print("status  - Show detailed status report")
+                            print("help    - Show this help message")
+                            print("close   - Exit the Heartbeat Agent (requires confirmation)")
+                            print("=" * 80)
+                            print()
+                            print("📊 Live Status:")
+                            print("-" * 80)
+                        elif user_input:
+                            print(f"\n❓ Unknown command: '{user_input}'. Type 'help' for available commands.\n")
+                    else:
+                        time.sleep(0.1)
+                except:
+                    time.sleep(0.5)
+
+    # Print banner
+    print_banner()
+
+    # Setup console close handler (X button confirmation)
+    handler_result = setup_console_close_handler()
+
+    # Debug: Check if we're running as frozen executable
+    is_frozen = getattr(sys, 'frozen', False)
+    print(f"Debug: Running as {'EXE (frozen)' if is_frozen else 'Python script'}")
+
+    if handler_result == True:
+        print("✓ Console close handler installed successfully")
+        print("  → Click the X button to test - you should see a confirmation dialog")
+    elif handler_result == "limited":
+        print("⚠️  Console close handler has limited functionality when running as Python script")
+        print("   For full protection, use the compiled EXE (dist\\HeartbeatAgent.exe)")
+    else:
+        print("⚠️  Console close handler could not be installed")
+    print()
+
     # Check for single instance
     if not check_single_instance():
-        messagebox.showerror(
-            "Already Running",
-            "Heartbeat Agent is already running!\n\n"
-            "Check your system tray for the heartbeat icon.\n\n"
-            "If you don't see it, the previous instance may have crashed.\n"
-            "Restart your computer or end the process in Task Manager."
-        )
+        print("❌ ERROR: Heartbeat Agent is already running!")
+        print()
+        print("Check your system tray for the heartbeat icon.")
+        print("If you don't see it, the previous instance may have crashed.")
+        print("Restart your computer or end the process in Task Manager.")
+        print()
+        input("Press Enter to exit...")
         sys.exit(1)
-    
-    # Get device name and server URL via GUI
+
+    print("✓ Single instance check passed")
+    print()
+
+    # Get device name and server URL (from config or GUI on first run)
     device_name, server_url = get_device_name_gui()
-    
+
     if not device_name or not server_url:
-        print("❌ Configuration required to start agent")
+        # Configuration required to start agent
+        print("❌ Configuration cancelled or incomplete")
         cleanup_lock_file()
+        input("Press Enter to exit...")
         sys.exit(1)
-    
+
+    print("🚀 Starting Heartbeat Agent...")
+    time.sleep(1)
+
+    # Start console monitor thread
+    monitor_thread = threading.Thread(target=console_monitor_thread, daemon=True)
+    monitor_thread.start()
+
     # Run the agent
     run_heartbeat_agent(server_url, device_name)

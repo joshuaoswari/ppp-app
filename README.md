@@ -1,21 +1,33 @@
-# 🖥️ PC Heartbeat Monitoring System
+# 🖥️ PC Heartbeat Monitoring System v1.0
 
-A complete push-based heartbeat monitoring solution for tracking 33 Windows PCs across multiple locations in real-time. Built with Flask and designed for easy deployment on Render.com.
+A complete push-based heartbeat monitoring solution for tracking Windows PCs across multiple locations in real-time. Built with Flask, featuring a modern web dashboard, system tray integration, and comprehensive login/logout tracking.
 
 ![Status](https://img.shields.io/badge/status-production%20ready-brightgreen)
 ![Python](https://img.shields.io/badge/python-3.8%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
+![Version](https://img.shields.io/badge/version-1.0-blue)
 
 ## ✨ Features
 
-- **🔴 Real-Time Monitoring**: Instant online/offline status updates
-- **📊 Beautiful Dashboard**: Auto-refreshing web interface with color-coded indicators
-- **📈 Uptime Tracking**: 24-hour uptime percentage for each device
-- **🔄 Auto-Retry Logic**: Exponential backoff with network failure resilience
-- **💾 Persistent Storage**: SQLite database with automatic cleanup
-- **🚀 Easy Deployment**: Deploy server to Render in 5 minutes
-- **💻 Windows Native**: Lightweight client agent with auto-start capability
+### Client Agent
+- **🔴 Real-Time Heartbeat**: Sends status every 10 seconds
+- **🖥️ System Tray Integration**: Runs in background with tray icon and menu
+- **📊 Live Console Display**: Real-time status updates and heartbeat counter
+- **🔒 Safe Exit Protection**: Confirmation dialog prevents accidental closure
+- **🔄 Auto-Relaunch**: If cancelled, automatically relaunches agent
+- **👤 Login/Logout Tracking**: Records Windows session times and durations
+- **💾 Persistent Config**: Saves device name and server URL locally
 - **📦 Standalone EXE**: No Python required on client PCs
+
+### Web Dashboard
+- **📊 Beautiful Dashboard**: Auto-refreshing web interface with color-coded indicators
+- **📈 Uptime Visualization**: 24-hour uptime with hourly blocks
+- **📉 Login Statistics**: View detailed login/logout history per device
+- **🔐 Admin Mode**: Password-protected device management
+- **📦 Archive System**: Archive/restore devices without losing data
+- **🔄 Device Reordering**: Drag to reorder device display
+- **💾 Persistent Storage**: SQLite database with historical data
+- **🚀 Easy Deployment**: Deploy server to Render or any VPS
 
 ## 📸 Screenshot
 

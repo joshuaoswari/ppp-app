@@ -9,7 +9,12 @@
       "Bash(git branch:*)",
       "Bash(git push:*)",
       "Bash(git pull:*)",
-      "Bash(git checkout:*)"
+      "Bash(git checkout:*)",
+      "Bash(powershell:*)",
+      "Bash(taskkill:*)",
+      "Bash(nul)",
+      "Bash(python -m PyInstaller:*)",
+      "Bash(dir:*)"
     ],
     "deny": [],
     "ask": []
