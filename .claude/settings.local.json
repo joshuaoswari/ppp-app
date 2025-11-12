@@ -14,7 +14,9 @@
       "Bash(taskkill:*)",
       "Bash(nul)",
       "Bash(python -m PyInstaller:*)",
-      "Bash(dir:*)"
+      "Bash(dir:*)",
+      "Bash(git tag:*)",
+      "Bash(python -m py_compile:*)"
     ],
     "deny": [],
     "ask": []
