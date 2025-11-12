@@ -788,7 +788,6 @@ def dashboard():
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>PC Heartbeat Monitor</title>
-        <meta http-equiv="refresh" content="30">
         <style>
             * {
                 margin: 0;
@@ -1476,6 +1475,7 @@ def dashboard():
             <div class="header" id="header" onclick="handleHeaderClick()">
                 <h1>🖥️ PC Heartbeat Monitor</h1>
                 <p class="subtitle">Real-time monitoring of {{ total_devices }} Windows PCs across multiple locations</p>
+                <button id="logoutBtn" onclick="handleLogout(event)" style="display: none; position: absolute; top: 20px; right: 20px; padding: 8px 16px; background: rgba(255,255,255,0.2); border: 1px solid rgba(255,255,255,0.3); color: white; border-radius: 4px; cursor: pointer; font-size: 14px;">🔓 Logout</button>
             </div>
             
             <div class="stats">
@@ -1628,9 +1628,22 @@ def dashboard():
             let clickCount = 0;
             let clickTimer = null;
             let isAdminMode = false;
-            
-            // Load uptime blocks for all devices
-            document.addEventListener('DOMContentLoaded', () => {
+
+            // Auto-refresh every 30 seconds (preserves admin mode via localStorage)
+            setTimeout(() => {
+                location.reload();
+            }, 30000);
+
+            // Load admin mode from localStorage on page load
+            window.addEventListener('DOMContentLoaded', () => {
+                // Check if admin mode was previously enabled
+                const savedAdminMode = localStorage.getItem('heartbeat_admin_mode');
+                if (savedAdminMode === 'true') {
+                    isAdminMode = true;
+                    enableAdminMode();
+                }
+
+                // Load uptime blocks for all devices
                 const devices = {{ devices | tojson }};
                 devices.forEach((device, index) => {
                     loadUptimeBlocks(device.device_name, index);
@@ -1725,10 +1738,12 @@ def dashboard():
             function handleLogin(event) {
                 event.preventDefault();
                 const password = document.getElementById('password').value;
-                
+
                 // Simple password check (change 'admin' to your desired password)
                 if (password === 'admin123') {
                     isAdminMode = true;
+                    // Save admin mode to localStorage so it persists across page refreshes
+                    localStorage.setItem('heartbeat_admin_mode', 'true');
                     closeModal();
                     enableAdminMode();
                 } else {
@@ -1736,7 +1751,7 @@ def dashboard():
                     document.getElementById('password').value = '';
                     document.getElementById('password').focus();
                 }
-                
+
                 return false;
             }
             
@@ -1765,10 +1780,23 @@ def dashboard():
                     showArchivedBtn.style.display = 'block';
                 }
 
+                // Show logout button
+                document.getElementById('logoutBtn').style.display = 'block';
+
                 // Change header color slightly to indicate admin mode
                 document.getElementById('header').style.background = 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)';
                 document.querySelector('h1').style.color = 'white';
                 document.querySelector('.subtitle').style.color = 'rgba(255,255,255,0.9)';
+            }
+
+            function handleLogout(event) {
+                event.stopPropagation(); // Prevent header click from triggering
+                if (confirm('Logout from admin mode?')) {
+                    // Clear admin mode from localStorage
+                    localStorage.removeItem('heartbeat_admin_mode');
+                    // Reload page to exit admin mode
+                    location.reload();
+                }
             }
             
             function archiveDevice(deviceName) {
