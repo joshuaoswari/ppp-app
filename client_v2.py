@@ -232,7 +232,7 @@ class HeartbeatAgent:
             }
 
             response = requests.post(
-                f"{server_url}/api/heartbeat",
+                f"{server_url}/heartbeat",
                 json=data,
                 timeout=10
             )
