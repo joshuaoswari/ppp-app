@@ -214,30 +214,56 @@ def heartbeat():
                 
                 print(f"✏️  Renamed device: {old_name} → {device_name} (MAC: {mac_address})")
             else:
-                # Insert or update device
-                c.execute('''
-                    INSERT INTO devices (device_name, mac_address, last_seen, total_heartbeats)
-                    VALUES (?, ?, ?, 1)
-                    ON CONFLICT(device_name) DO UPDATE SET
-                        mac_address = ?,
-                        last_seen = ?,
-                        total_heartbeats = total_heartbeats + 1
-                ''', (device_name, mac_address, datetime.now(), mac_address, datetime.now()))
+                # Check if device is archived before updating
+                c.execute('SELECT is_archived FROM devices WHERE device_name = ?', (device_name,))
+                existing = c.fetchone()
+
+                if existing and existing['is_archived'] == 1:
+                    # Device is archived - do NOT update last_seen or heartbeat count
+                    # Just silently ignore the heartbeat
+                    pass
+                else:
+                    # Insert or update device (only if not archived)
+                    c.execute('''
+                        INSERT INTO devices (device_name, mac_address, last_seen, total_heartbeats)
+                        VALUES (?, ?, ?, 1)
+                        ON CONFLICT(device_name) DO UPDATE SET
+                            mac_address = ?,
+                            last_seen = ?,
+                            total_heartbeats = total_heartbeats + 1
+                        WHERE is_archived = 0
+                    ''', (device_name, mac_address, datetime.now(), mac_address, datetime.now()))
         else:
             # No MAC address provided, use old logic
+            # Check if device is archived before updating
+            c.execute('SELECT is_archived FROM devices WHERE device_name = ?', (device_name,))
+            existing = c.fetchone()
+
+            if existing and existing['is_archived'] == 1:
+                # Device is archived - do NOT update last_seen or heartbeat count
+                # Just silently ignore the heartbeat
+                pass
+            else:
+                # Insert or update device (only if not archived)
+                c.execute('''
+                    INSERT INTO devices (device_name, last_seen, total_heartbeats)
+                    VALUES (?, ?, 1)
+                    ON CONFLICT(device_name) DO UPDATE SET
+                        last_seen = ?,
+                        total_heartbeats = total_heartbeats + 1
+                    WHERE is_archived = 0
+                ''', (device_name, datetime.now(), datetime.now()))
+
+        # Log heartbeat for uptime calculation (only if not archived)
+        c.execute('SELECT is_archived FROM devices WHERE device_name = ?', (device_name,))
+        device_status = c.fetchone()
+
+        if not device_status or device_status['is_archived'] == 0:
+            # Only log heartbeat if device is not archived
             c.execute('''
-                INSERT INTO devices (device_name, last_seen, total_heartbeats)
-                VALUES (?, ?, 1)
-                ON CONFLICT(device_name) DO UPDATE SET
-                    last_seen = ?,
-                    total_heartbeats = total_heartbeats + 1
-            ''', (device_name, datetime.now(), datetime.now()))
-        
-        # Log heartbeat for uptime calculation
-        c.execute('''
-            INSERT INTO heartbeats (device_name, timestamp)
-            VALUES (?, ?)
-        ''', (device_name, datetime.now()))
+                INSERT INTO heartbeats (device_name, timestamp)
+                VALUES (?, ?)
+            ''', (device_name, datetime.now()))
 
         # Log login statistics if this is a new connection/login
         if is_new_login:
